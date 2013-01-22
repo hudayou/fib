@@ -1,0 +1,10 @@
+fib [options] -f file
+-h, --help               Display this help
+-f, --file               Find identical blocks in this file
+-s, --start-line-regexp  Regular expression for the first line of the block
+-e, --end-line-regexp    Regular expression for the last line of the block
+-x, --cross-find         Cross find blocks in all files
+--min-size               Minimal size of the block
+--max-size               Maximal size of the block
+--min-factor             Minimal times a block is repeated
+--max-factor             Maximal times a block is repeated
