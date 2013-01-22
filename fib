@@ -104,9 +104,11 @@
 ;; have a smaller block size.
 
 (define (enumerate-interval low high)
-  (if (> low high)
-    nil
-    (cons low (enumerate-interval (+ low 1) high))))
+  (let loop ((i high)
+             (interval nil))
+    (if (< i low)
+      interval
+      (loop (- i 1) (cons i interval)))))
 
 (use-modules (ice-9 rdelim))
 
