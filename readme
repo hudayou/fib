@@ -4,6 +4,7 @@ fib [options] -f file
 -s, --start-line-regexp  Regular expression for the first line of the block
 -e, --end-line-regexp    Regular expression for the last line of the block
 -x, --cross-find         Cross find blocks in all files
+--max-lines              Skip file with too many lines
 --min-size               Minimal size of the block
 --max-size               Maximal size of the block
 --min-factor             Minimal times a block is repeated
