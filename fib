@@ -38,6 +38,10 @@
 ;; The maximum times of a block is repated in the file.
 (define max-repeat-factor 64)
 
+;; The maximum no of lines in the file.
+
+(define max-no-of-lines 20000)
+
 ;; Cross find identical blocks in all files?
 (define cross-find #f)
 
@@ -135,7 +139,7 @@
 ;; defaults to accept any block
 ;; as an example, you can use the following cmd line to search a list
 ;; block in a yaml file:
-;; fib -s "^\\s+[-a-z]+:\\s*[|>]*\\s*$" -e "^\\s+[.a-z].*$") -f file
+;; fib -s "^\\s+[-a-z]+:\\s*[|>]*\\s*$" -e "^\\s+[.a-z].*$" -f file
 
 ;; accept any start-line
 (define start-line-regexp ".*")
@@ -177,6 +181,10 @@
       list-of-lines
       delimiter-string)))
 
+(define (expected-no-of-lines? no-of-lines)
+  (and (< max-no-of-lines no-of-lines)
+       (< min-block-size no-of-lines)))
+
 (define (build-block-hash-table file hash-table)
   (define list-of-lines (read-lines file))
   (define (build-hash-table line-list start-line)
@@ -213,7 +221,9 @@
                                     (if (< no-of-lines max-block-size)
                                       no-of-lines
                                       max-block-size))))))
-  (build-hash-table list-of-lines 1))
+  (if (expected-no-of-lines? (length list-of-lines))
+    hash-table
+    (build-hash-table list-of-lines 1)))
 
 (define (hash-empty? hash-table)
   (eq? (hash-map->list cons hash-table) nil))
@@ -328,11 +338,25 @@
 (use-modules (ice-9 getopt-long))
 
 (define (main args)
+  (define (set-no-from-str no str)
+    (if (string? str)
+      (let ((str-no (string->number str)))
+        (if (and (integer? str-no)
+                 (not (eqv? no str-no)))
+          (set! no str-no))))
+    no)
+  (define (set-rex-from-str rex str)
+    (if (and (string? str)
+             (regexp? (make-regexp str))
+             (not (equal? rex str)))
+      str
+      rex))
   (let* ((option-spec '((help (single-char #\h) (value #f))
                         (file (single-char #\f) (value #t))
                         (start-line-regexp (single-char #\s) (value #t))
                         (end-line-regexp (single-char #\e) (value #t))
                         (cross-find (single-char #\x) (value #f))
+                        (max-lines (value #t))
                         (min-size (value #t))
                         (max-size (value #t))
                         (min-factor (value #t))
@@ -343,19 +367,21 @@
          (file
            (option-ref options 'file #f))
          (srex
-           (option-ref options 'start-line-regexp start-line-regexp))
+           (option-ref options 'start-line-regexp #f))
          (erex
-           (option-ref options 'end-line-regexp end-line-regexp))
+           (option-ref options 'end-line-regexp #f))
          (xfind
            (option-ref options 'cross-find #f))
+         (max-lines
+           (option-ref options 'max-lines #f))
          (min-size
-           (option-ref options 'min-size min-block-size))
+           (option-ref options 'min-size #f))
          (max-size
-           (option-ref options 'max-size max-block-size))
+           (option-ref options 'max-size #f))
          (min-factor
-           (option-ref options 'min-factor min-repeat-factor))
+           (option-ref options 'min-factor #f))
          (max-factor
-           (option-ref options 'max-factor max-repeat-factor)))
+           (option-ref options 'max-factor #f)))
     (if (or help-wanted (not file))
       (begin
         (display "fib [options] -f file\n")
@@ -364,28 +390,27 @@
         (display "-s, --start-line-regexp  Regular expression for the first line of the block\n")
         (display "-e, --end-line-regexp    Regular expression for the last line of the block\n")
         (display "-x, --cross-find         Cross find blocks in all files\n")
+        (display "--max-lines              Skip file with too many lines\n")
         (display "--min-size               Minimal size of the block\n")
         (display "--max-size               Maximal size of the block\n")
         (display "--min-factor             Minimal times a block is repeated\n")
         (display "--max-factor             Maximal times a block is repeated\n"))
       (begin
-        (if (not (equal? srex start-line-regexp))
-          (set! start-line-regexp srex))
-        (if (not (equal? erex end-line-regexp))
-          (set! end-line-regexp erex))
+        (set! start-line-regexp
+          (set-rex-from-str start-line-regexp srex))
+        (set! end-line-regexp
+          (set-rex-from-str end-line-regexp erex))
         (if xfind
           (set! cross-find #t))
-        (if (and (not (equal? min-size min-block-size))
-                 (integer? (string->number min-size)))
-          (set! min-block-size (string->number min-size)))
-        (if (and (not (equal? max-size max-block-size))
-                 (integer? (string->number max-size)))
-          (set! max-block-size (string->number max-size)))
-        (if (and (not (equal? min-factor min-repeat-factor))
-                 (integer? (string->number min-factor)))
-          (set! min-repeat-factor (string->number min-factor)))
-        (if (and (not (equal? max-factor max-repeat-factor))
-                 (integer? (string->number max-factor)))
-          (set! max-repeat-factor (string->number max-factor)))
+        (set! max-no-of-lines
+          (set-no-from-str max-no-of-lines max-lines))
+        (set! min-block-size
+          (set-no-from-str min-block-size min-size))
+        (set! max-block-size
+          (set-no-from-str max-block-size max-size))
+        (set! min-repeat-factor
+          (set-no-from-str min-repeat-factor min-factor))
+        (set! max-repeat-factor
+          (set-no-from-str max-repeat-factor max-factor))
         (fib file))))
   (exit exit-status))
