@@ -39,11 +39,13 @@
 (define max-repeat-factor 64)
 
 ;; The maximum no of lines in the file.
-
 (define max-no-of-lines 20000)
 
 ;; Cross find identical blocks in all files?
 (define cross-find #f)
+
+;; Diff command used against a version controlled file.
+(define diff-cmd #f)
 
 ;; How a code block record looks like?
 ;; A vector looks like below:
@@ -79,7 +81,11 @@
         bsize)
       delimiter-string)))
 
-(define (block-overlaps? block1 block2)
+(define (block-interval block)
+  (make-interval (block-start block)
+                 (block-end block)))
+
+(define (block-includes? block1 block2)
   (or
     (and (>= (block-start block1) (block-start block2))
          (<= (block-end block1) (block-end block2))
@@ -90,12 +96,296 @@
 
 ;; A block list is a list of blocks with same content
 
-(define (block-list-overlaps? lst1 lst2)
+(define (block-list-includes? lst1 lst2)
   (if (and (null? lst1) (null? lst2))
     #t
     (and (= (length lst1) (length lst2))
-         (block-overlaps? (car lst1) (car lst2))
-         (block-list-overlaps? (cdr lst1) (cdr lst2)))))
+         (block-includes? (car lst1) (car lst2))
+         (block-list-includes? (cdr lst1) (cdr lst2)))))
+
+;; An interval is a pair
+;; (low . high)
+(define (make-interval low high) (cons low high))
+
+(define (interval-low interval) (car interval))
+
+(define (interval-high interval) (cdr interval))
+
+(define (interval-overlaps? interval1 interval2)
+  (let ((low1 (interval-low interval1))
+        (high1 (interval-high interval1))
+        (low2 (interval-low interval2))
+        (high2 (interval-high interval2)))
+    (and (<= low1 high2)
+         (<= low2 high1))))
+
+;; be clear what less means for compound data keys
+;; keys are distinct, so when low parts of them are the same,
+;; order them by the high parts.
+(define (interval-less? interval1 interval2)
+  (let ((low1 (interval-low interval1))
+        (low2 (interval-low interval2))
+        (high1 (interval-high interval1))
+        (high2 (interval-high interval2)))
+    (if (= low1 low2)
+      (< high1 high2)
+      (< low1 low2))))
+
+;; An node is a list
+;; (key priority data value)
+(define (make-node key priority data value)
+  (list key priority data value))
+
+(define (node-key node) (car node))
+
+(define (node-priority node) (cadr node))
+
+(define (node-data node) (caddr node))
+
+(define (node-value node) (cadddr node))
+
+;; A tree is list
+;; (node left right)
+(define (make-tree node left right)
+  (list node left right))
+
+(define (tree-node tree) (car tree))
+
+(define (tree-left tree) (cadr tree))
+
+(define (tree-right tree) (caddr tree))
+
+(define (priority-less? tree1 tree2)
+  (let ((priority1 (node-priority (tree-node tree1)))
+        (priority2 (node-priority (tree-node tree2))))
+    (< priority1 priority2)))
+
+;; ops on the hash tree
+
+(define (hash-search hash tree)
+  (if (null? tree)
+    #f
+    (let ((node (tree-node tree))
+          (left (tree-left tree))
+          (right (tree-right tree)))
+      (let ((k (node-key node)))
+        (cond ((< hash k)
+               (hash-search hash left))
+              ((= hash k)
+               #t)
+              (else
+                (hash-search hash right)))))))
+
+(define (hash-insert hash tree)
+  (treap-insert
+    hash
+    (time-priority)
+    1
+    nil
+    tree
+    <
+    hash-update-data))
+
+(define (hash-update-data tree)
+  (define (tree-data tree)
+    (if (null? tree)
+      0
+      (node-data (tree-node tree))))
+  (treap-update-data
+    tree
+    (lambda (tree left right)
+      (+ (tree-data left)
+         (tree-data right)
+         1))))
+
+(define (hash-size tree)
+  (if (null? tree)
+    0
+    (node-data (tree-node tree))))
+
+;; ops on the interval tree
+
+(define (node-overlaps-interval? node interval)
+  (interval-overlaps? (node-key node) interval))
+
+(define (tree-overlaps-interval? tree interval)
+  (if (null? tree)
+    #f
+    (let ((data (node-data (tree-node tree)))
+          (low (interval-low interval)))
+      (>= data low))))
+
+(define (interval-update-data tree)
+  (define (tree-data tree)
+    (if (null? tree)
+      -inf.0
+      (node-data (tree-node tree))))
+  (treap-update-data
+    tree
+    (lambda (tree left right)
+      (max (interval-high (node-key (tree-node tree)))
+           (tree-data left)
+           (tree-data right)))))
+
+(define (interval-traverse-search interval tree combine init)
+  (define (search-to-result tree result)
+    (if (null? tree)
+      result
+      (let ((node (tree-node tree))
+            (left (tree-left tree))
+            (right (tree-right tree)))
+        (let ((value (node-value node)))
+          (if (node-overlaps-interval? node interval)
+            (if (tree-overlaps-interval? left interval)
+              (search-to-result left
+                                (combine value
+                                         (search-to-result right result)))
+              (search-to-result right (combine value result)))
+            (if (tree-overlaps-interval? left interval)
+              (search-to-result left
+                                (search-to-result right result))
+              (search-to-result right result)))))))
+  (search-to-result tree init))
+
+(define (interval-insert interval value tree)
+  (treap-insert
+    interval
+    (random-priority)
+    (interval-high interval)
+    value
+    tree
+    interval-less?
+    interval-update-data))
+
+;; random and time priority
+
+(define (random-priority)
+  (random:uniform))
+
+(define (time-priority)
+  (let ((time (gettimeofday)))
+    (let ((second (car time))
+          (microsecond (cdr time)))
+      (- (+ (* second 1000000) microsecond)))))
+
+;; ops on the treap
+
+(define (treap-insert key priority data value tree key-less? update-data)
+  (define (fixup tree)
+    (let ((node (tree-node tree))
+          (left (tree-left tree))
+          (right (tree-right tree)))
+      (cond ((and (null? left) (null? right))
+             tree)
+            ((null? left)
+             (if (priority-less? tree right)
+               (let ((left-of-right (tree-left right))
+                     (right-of-right (tree-right right))
+                     (node-of-right (tree-node right)))
+                 (update-data
+                   (make-tree
+                     node-of-right
+                     (update-data
+                       (make-tree
+                         node
+                         nil
+                         left-of-right))
+                     right-of-right)))
+               (update-data tree)))
+            ((null? right)
+             (if (priority-less? tree left)
+               (let ((left-of-left (tree-left left))
+                     (right-of-left (tree-right left))
+                     (node-of-left (tree-node left)))
+                 (update-data
+                   (make-tree
+                     node-of-left
+                     left-of-left
+                     (update-data
+                       (make-tree
+                         node
+                         right-of-left
+                         nil)))))
+               (update-data tree)))
+            (else
+              (let ((left-of-right (tree-left right))
+                    (right-of-right (tree-right right))
+                    (node-of-right (tree-node right))
+                    (left-of-left (tree-left left))
+                    (right-of-left (tree-right left))
+                    (node-of-left (tree-node left)))
+                (cond ((priority-less? tree left)
+                       (update-data
+                         (make-tree
+                           node-of-left
+                           left-of-left
+                           (update-data
+                             (make-tree
+                               node
+                               right-of-left
+                               right)))))
+                      ((priority-less? tree right)
+                       (update-data
+                         (make-tree
+                           node-of-right
+                           (update-data
+                             (make-tree
+                               node
+                               left
+                               left-of-right))
+                           right-of-right)))
+                      (else
+                        (update-data tree))))))))
+  (define (insert key value tree)
+    (if (null? tree)
+      (make-tree
+        (make-node key
+                   priority
+                   data
+                   value)
+        nil
+        nil)
+      (let ((node (tree-node tree))
+            (left (tree-left tree))
+            (right (tree-right tree)))
+        (let ((k (node-key node)))
+          (cond ((key-less? key k)
+                 (fixup
+                   (make-tree node
+                              (insert key value left)
+                              right)))
+                ;; swallow duplicate insertions
+                ((equal? key k)
+                 tree)
+                ;; flip a coin to decide to go left or right,
+                ;; if only part of k and key equals?
+                (else
+                  (fixup
+                    (make-tree node
+                               left
+                               (insert key value right)))))))))
+  (insert key value tree))
+
+;; data in a treap is something depends on the root, left and right.
+;; when any of the three is changed, it should be updated.
+(define (treap-update-data tree update-proc)
+  (define (update-node-data node data)
+    (let ((key (node-key node))
+          (priority (node-priority node))
+          (value (node-value node)))
+      (make-node key priority data value)))
+  (if (null? tree)
+    tree
+    (let ((node (tree-node tree))
+          (left (tree-left tree))
+          (right (tree-right tree)))
+      (make-tree
+        (update-node-data node
+                          (update-proc tree
+                                       left
+                                       right))
+        left
+        right))))
 
 ;; The algorithm:
 ;; Build blocks from the file, insert list of identical blocks
@@ -104,7 +394,7 @@
 ;;
 ;; Remove single blocks, which means they have no companies in the file.
 ;;
-;; Remove list of blocks which overlaps with other list of blocks and
+;; Remove list of blocks which are included in other list of blocks and
 ;; have a smaller block size.
 
 (define (enumerate-interval low high)
@@ -116,18 +406,22 @@
 
 (use-modules (ice-9 rdelim))
 
-(define (read-file port)
+(define (read-all port)
   (read-delimited "" port))
 
 (define delimiter #\newline)
 (define delimiter-string "\n")
 
-(define (read-lines file)
+(define (split-lines lines)
   (string-split
     (string-trim-right
-      (call-with-input-file file read-file)
+      lines
       delimiter)
     delimiter))
+
+(define (read-lines file)
+  (split-lines
+    (call-with-input-file file read-all)))
 
 ;; A fold operation, use fold instead?
 (define (and-filters filters param)
@@ -226,37 +520,106 @@
     (build-hash-table list-of-lines 1)))
 
 (define (hash-empty? hash-table)
-  (eq? (hash-map->list cons hash-table) nil))
+  (= (hash-length hash-table) 0))
 
-(define (remove-duplicate-entries hash-table)
-  (define (remove-overlaps k1 v1)
+;; read syntax of a hash table is:
+;; #<hash-table 0/31>
+(define (hash-length hash-table)
+  (string->number
+    (cadr
+      (string-split
+        (car
+          (string-split
+            (object->string hash-table)
+            #\/))
+        #\sp))))
+
+(define (remove-sub-blocks hash-table)
+  (define (remove-includes k1 v1)
     (for-each
       (lambda (x)
         (let* ((k2 (car x))
                (v2 (cdr x))
                (s2 (block-size v2))
                (s1 (block-size v1)))
-          (if (block-list-overlaps? v1 v2)
+          (if (block-list-includes? v1 v2)
             (if (< s2 s1)
               (hash-remove! hash-table k2)))))
       (hash-map->list cons hash-table)))
   ;; prove by contradiction
-  ;; since for each block list, block lists overlaps
-  ;; with it and have a smaller block size is removed.
+  ;; since for each block list, block lists included
+  ;; in it and have a smaller block size is removed.
   ;;
-  ;; if there is such a block that overlaps with other,
+  ;; if there is such a block that is included in other block,
   ;; two cases:
   ;; the other block have a smaller size, then it should be removed already.
   ;; otherwise, the block itself should already be removed.
   (for-each
     (lambda (x)
-      (remove-overlaps (car x) (cdr x)))
+      (remove-includes (car x) (cdr x)))
     (hash-map->list cons hash-table))
   hash-table)
 
 (define (eat-blocks hash-table)
-  (remove-duplicate-entries
+  (remove-sub-blocks
     (remove-single-blocks hash-table)))
+
+;; remove blocks which unrelated with blocks in list-of-blocks from
+;; hash-table
+(define (remove-unrelated-blocks list-of-blocks hash-table)
+  (define hash-table-size (hash-length hash-table))
+  (define (build-interval-tree-table hash-table)
+    (let ((interval-tree-table (make-hash-table)))
+      (hash-for-each
+        (lambda (hash-of-block block-list)
+          (for-each
+            (lambda (b)
+              (let* ((hash-of-path (string-hash (block-path b)))
+                     (interval-tree (hash-ref interval-tree-table
+                                              hash-of-path)))
+                (if interval-tree
+                  (hash-set! interval-tree-table hash-of-path
+                             (interval-insert (block-interval b)
+                                              hash-of-block
+                                              interval-tree))
+                  (hash-set! interval-tree-table hash-of-path
+                             (interval-insert (block-interval b)
+                                              hash-of-block
+                                              nil)))))
+            block-list))
+        hash-table)
+      interval-tree-table))
+  (define (build-hash-tree list-of-blocks interval-tree-table)
+    (let bht ((hash-tree nil)
+              (list-of-blocks list-of-blocks))
+      (if (null? list-of-blocks)
+        hash-tree
+        (let* ((b (car list-of-blocks))
+               (hash-of-path (string-hash (block-path b)))
+               (interval-tree (hash-ref interval-tree-table
+                                        hash-of-path))
+               (hash-tree-size (hash-size hash-tree)))
+          (if (< hash-tree-size hash-table-size)
+            (begin
+              (if interval-tree
+                (set! hash-tree
+                  (interval-traverse-search (block-interval b)
+                                            interval-tree
+                                            hash-insert
+                                            hash-tree)))
+              (bht hash-tree (cdr list-of-blocks)))
+            hash-tree)))))
+  (let ((interval-tree-table (build-interval-tree-table hash-table)))
+    (let ((hash-tree (build-hash-tree list-of-blocks interval-tree-table)))
+      (let ((hash-tree-size (hash-size hash-tree)))
+        (if (< hash-tree-size hash-table-size)
+          (for-each
+            (lambda (x)
+              (let ((k (car x)))
+                (if (not (hash-search k hash-tree))
+                  (hash-remove! hash-table k))))
+            (hash-map->list cons hash-table))))))
+  hash-table)
 
 (define (pretty-show hash-table)
   (define (footprint x)
@@ -280,25 +643,38 @@
       (newline))
     hash-table))
 
-(define (display-blocks hash-table)
-  (let ((eated-table (eat-blocks hash-table)))
-    (if (not (hash-empty? eated-table))
+(define (display-blocks file hash-table)
+  (define (show-blocks hash-table)
+    (if (not (hash-empty? hash-table))
       (begin
         (set! exit-status 1)
-        (pretty-show eated-table)))))
+        (pretty-show hash-table))))
+  (let ((eated-table (eat-blocks hash-table)))
+    (if diff-cmd
+      (let ((list-of-changed-blocks nil))
+        (for-each
+          (lambda (file)
+            (set! list-of-changed-blocks
+              (append list-of-changed-blocks
+                      (get-changed-blocks diff-cmd file))))
+          (get-changed-files diff-cmd file))
+        (show-blocks
+          (remove-unrelated-blocks list-of-changed-blocks
+                                   eated-table)))
+      (show-blocks eated-table))))
 
 (define (find-identical-blocks file)
   (build-block-hash-table file block-hash-table)
   (if (not cross-find)
     (begin
-      (display-blocks block-hash-table)
+      (display-blocks file block-hash-table)
       (hash-clear! block-hash-table))))
 
 (use-modules (ice-9 popen))
 
 (define (command-output command)
   (let* ((port (open-input-pipe command))
-         (str (read-line port)))
+         (str (read-all port)))
     (close-pipe port)
     str))
 
@@ -315,7 +691,7 @@
 
 (use-modules (ice-9 ftw))
 
-(define (fib file)
+(define (fib-in-file file)
   (for-each
     (lambda (f)
       (ftw f wrapper-of-fib))
@@ -329,9 +705,46 @@
               (eq? c #\newline)
               (eq? c #\vt)
               (eq? c #\np))))
-      #\space))
+      #\space)))
+
+;; get changed blocks in a single file
+(define (get-changed-blocks diff-cmd file)
+  (define cmd (string-append diff-cmd " -U0 " " -- " file))
+  (let ((list-of-changed-blocks nil))
+    (for-each
+      (lambda (line)
+        (let ((match-struct
+                (string-match
+                  "^@@ -[0-9]+(,[0-9]+)? \\+([0-9]+)(,([0-9]+))? @@"
+                  line)))
+          (if match-struct
+            (let* ((bsize (match:substring match-struct 4))
+                   (bstart (string->number (match:substring match-struct 2)))
+                   (bend (if bsize (+ bstart
+                                      (string->number bsize)
+                                      -1) bstart)))
+              (set! list-of-changed-blocks
+                (cons (make-block file bstart bend)
+                      list-of-changed-blocks))))))
+      (split-lines
+        (command-output cmd)))
+    list-of-changed-blocks))
+
+(define (get-changed-files diff-cmd file)
+  (define cmd (string-append diff-cmd " --name-only " " -- " file))
+  (split-lines
+    (command-output cmd)))
+
+(define (fib file)
+  (if diff-cmd
+    ;; process changed files only
+    (let ((changed-files (get-changed-files diff-cmd file)))
+      (for-each
+        fib-in-file
+        changed-files))
+    (fib-in-file file))
   (if cross-find
-    (display-blocks block-hash-table)))
+    (display-blocks file block-hash-table)))
 
 (use-modules (ice-9 regex))
 
@@ -356,6 +769,7 @@
                         (start-line-regexp (single-char #\s) (value #t))
                         (end-line-regexp (single-char #\e) (value #t))
                         (cross-find (single-char #\x) (value #f))
+                        (diff-cmd (single-char #\d) (value #t))
                         (max-lines (value #t))
                         (min-size (value #t))
                         (max-size (value #t))
@@ -372,6 +786,8 @@
            (option-ref options 'end-line-regexp #f))
          (xfind
            (option-ref options 'cross-find #f))
+         (dcmd
+           (option-ref options 'diff-cmd #f))
          (max-lines
            (option-ref options 'max-lines #f))
          (min-size
@@ -390,6 +806,7 @@
         (display "-s, --start-line-regexp  Regular expression for the first line of the block\n")
         (display "-e, --end-line-regexp    Regular expression for the last line of the block\n")
         (display "-x, --cross-find         Cross find blocks in all files\n")
+        (display "-d, --diff-cmd           Diff command used against a version controlled file\n")
         (display "--max-lines              Skip file with too many lines\n")
         (display "--min-size               Minimal size of the block\n")
         (display "--max-size               Maximal size of the block\n")
@@ -402,6 +819,7 @@
           (set-rex-from-str end-line-regexp erex))
         (if xfind
           (set! cross-find #t))
+        (set! diff-cmd dcmd)
         (set! max-no-of-lines
           (set-no-from-str max-no-of-lines max-lines))
         (set! min-block-size
