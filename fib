@@ -44,8 +44,9 @@
 ;; Cross find identical blocks in all files?
 (define cross-find #f)
 
-;; Diff command used against a version controlled file.
-(define diff-cmd #f)
+;; Find identical blocks introduced by difference between
+;; commit and HEAD(git only)
+(define diff-commit #f)
 
 ;; How a code block record looks like?
 ;; A vector looks like below:
@@ -650,14 +651,14 @@
         (set! exit-status 1)
         (pretty-show hash-table))))
   (let ((eated-table (eat-blocks hash-table)))
-    (if diff-cmd
+    (if diff-commit
       (let ((list-of-changed-blocks nil))
         (for-each
           (lambda (file)
             (set! list-of-changed-blocks
               (append list-of-changed-blocks
-                      (get-changed-blocks diff-cmd file))))
-          (get-changed-files diff-cmd file))
+                      (get-changed-blocks diff-commit file))))
+          (get-changed-files diff-commit file))
         (show-blocks
           (remove-unrelated-blocks list-of-changed-blocks
                                    eated-table)))
@@ -708,8 +709,12 @@
       #\space)))
 
 ;; get changed blocks in a single file
-(define (get-changed-blocks diff-cmd file)
-  (define cmd (string-append diff-cmd " -U0 " " -- " file))
+(define (get-changed-blocks diff-commit file)
+  (define cmd (string-append "git diff "
+                             diff-commit
+                             " -U0 "
+                             " -- "
+                             file))
   (let ((list-of-changed-blocks nil))
     (for-each
       (lambda (line)
@@ -730,15 +735,19 @@
         (command-output cmd)))
     list-of-changed-blocks))
 
-(define (get-changed-files diff-cmd file)
-  (define cmd (string-append diff-cmd " --name-only " " -- " file))
+(define (get-changed-files diff-commit file)
+  (define cmd (string-append "git diff "
+                             diff-commit
+                             " --name-only "
+                             " -- "
+                             file))
   (split-lines
     (command-output cmd)))
 
 (define (fib file)
-  (if diff-cmd
+  (if diff-commit
     ;; process changed files only
-    (let ((changed-files (get-changed-files diff-cmd file)))
+    (let ((changed-files (get-changed-files diff-commit file)))
       (for-each
         fib-in-file
         changed-files))
@@ -769,7 +778,7 @@
                         (start-line-regexp (single-char #\s) (value #t))
                         (end-line-regexp (single-char #\e) (value #t))
                         (cross-find (single-char #\x) (value #f))
-                        (diff-cmd (single-char #\d) (value #t))
+                        (diff-commit (single-char #\d) (value #t))
                         (max-lines (value #t))
                         (min-size (value #t))
                         (max-size (value #t))
@@ -786,8 +795,8 @@
            (option-ref options 'end-line-regexp #f))
          (xfind
            (option-ref options 'cross-find #f))
-         (dcmd
-           (option-ref options 'diff-cmd #f))
+         (dcommit
+           (option-ref options 'diff-commit #f))
          (max-lines
            (option-ref options 'max-lines #f))
          (min-size
@@ -806,7 +815,7 @@
         (display "-s, --start-line-regexp  Regular expression for the first line of the block\n")
         (display "-e, --end-line-regexp    Regular expression for the last line of the block\n")
         (display "-x, --cross-find         Cross find blocks in all files\n")
-        (display "-d, --diff-cmd           Diff command used against a version controlled file\n")
+        (display "-d, --diff-commit        Find identical blocks introduced by difference between commit and HEAD(git only)\n")
         (display "--max-lines              Skip file with too many lines\n")
         (display "--min-size               Minimal size of the block\n")
         (display "--max-size               Maximal size of the block\n")
@@ -819,7 +828,7 @@
           (set-rex-from-str end-line-regexp erex))
         (if xfind
           (set! cross-find #t))
-        (set! diff-cmd dcmd)
+        (set! diff-commit dcommit)
         (set! max-no-of-lines
           (set-no-from-str max-no-of-lines max-lines))
         (set! min-block-size
