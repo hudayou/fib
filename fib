@@ -725,9 +725,12 @@
           (if match-struct
             (let* ((bsize (match:substring match-struct 4))
                    (bstart (string->number (match:substring match-struct 2)))
-                   (bend (if bsize (+ bstart
-                                      (string->number bsize)
-                                      -1) bstart)))
+                   (bend (if (or (not bsize)
+                                 (zero? (string->number bsize)))
+                           bstart
+                           (+ bstart
+                              (string->number bsize)
+                              -1))))
               (set! list-of-changed-blocks
                 (cons (make-block file bstart bend)
                       list-of-changed-blocks))))))
