@@ -527,13 +527,14 @@
 ;; #<hash-table 0/31>
 (define (hash-length hash-table)
   (string->number
-    (cadr
-      (string-split
-        (car
-          (string-split
-            (object->string hash-table)
-            #\/))
-        #\sp))))
+    (car
+      (reverse
+        (string-split
+          (car
+            (string-split
+              (object->string hash-table)
+              #\/))
+          #\sp)))))
 
 (define (remove-sub-blocks hash-table)
   (define (remove-includes k1 v1)
