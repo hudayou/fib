@@ -681,7 +681,10 @@
     str))
 
 (define (wrapper-of-fib file stat flag)
-  (define is-text-file (string-append "file -bi " file))
+  (define is-text-file
+    (if (string=? (utsname:sysname (uname)) "Darwin")
+      (string-append "file -bI " file)
+      (string-append "file -bi " file)))
   (if (and (eq? flag `regular)
            ;; skip hidden files
            (not (string-contains file "/."))
